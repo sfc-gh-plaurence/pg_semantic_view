@@ -422,3 +422,74 @@ This approach proves the hardest and most valuable parts of the project first:
 - discoverability for AI and BI tools
 
 It also keeps the prototype aligned with PostgreSQL extension norms and avoids premature investment in C-based internals before the semantic model is stable.
+## Cortex Code (CoCo) integration
+
+Cortex Code is Snowflake's AI coding assistant with a built-in understanding of Snowflake Semantic Views. When `pg_semantic_view` is installed in a PostgreSQL or Snowflake Postgres instance, CoCo can apply the same semantic-aware interaction pattern it uses for native Snowflake objects, giving it structured business context rather than requiring it to reverse-engineer join logic from raw schemas.
+
+### How the extension helps
+
+**Metadata grounding via `semantic.meta_*` views**
+
+Without a semantic layer, CoCo must infer business meaning from `information_schema` and raw column names. This leads to errors such as missing joins, incorrect aggregation grain, and ambiguous column references. The `semantic.meta_*` views expose the exact information CoCo needs to ground its SQL:
+
+```sql
+-- CoCo inspects available metrics before generating SQL
+SELECT metric_name, expression, aggregation_type, description
+FROM semantic.meta_metrics
+WHERE view_name = 'corporate_revenue';
+
+-- CoCo inspects join paths before building FROM/JOIN clauses
+SELECT relationship_name, from_table, to_table, join_expression, cardinality
+FROM semantic.meta_relationships
+WHERE view_name = 'corporate_revenue';
+```
+
+**SQL delegation via `semantic.compile_sql()`**
+
+Instead of generating multi-table SQL directly, CoCo can express intent at the semantic level and delegate join resolution and SQL construction to the extension:
+
+```sql
+-- CoCo calls compile_sql() rather than writing raw SQL
+SELECT semantic.compile_sql(
+    semantic_view => 'corporate_revenue',
+    metrics       => ARRAY['net_revenue', 'order_count'],
+    dimensions    => ARRAY['region', 'customer_segment'],
+    filters       => '{"region":{"eq":"EMEA"}}'::jsonb
+);
+```
+
+This eliminates an entire class of errors — wrong join order, missing `GROUP BY` columns, fanout from one-to-many joins — that CoCo would otherwise need to reason about from first principles.
+
+**OSI symmetry between Snowflake and Postgres**
+
+Snowflake Semantic Views use the Open Semantic Interchange (OSI) format. Because `pg_semantic_view` supports `semantic.import_osi()` and `semantic.export_osi()`, the same semantic model can be shared between environments:
+
+```sql
+-- Import a semantic model exported from Snowflake into Postgres
+SELECT semantic.import_osi(
+    model_name => 'corporate_revenue',
+    document   => '<OSI JSON exported from Snowflake>'::jsonb
+);
+```
+
+When a semantic model exists on both sides, CoCo can treat Snowflake and Postgres instances symmetrically — same metric names, same dimension names, same join semantics — regardless of which engine is executing the query.
+
+### Detection pattern
+
+CoCo can detect whether the extension is installed before generating SQL:
+
+```sql
+SELECT EXISTS (
+    SELECT 1
+    FROM   pg_catalog.pg_namespace
+    WHERE  nspname = 'semantic'
+) AS pg_semantic_view_installed;
+```
+
+If `true`, CoCo should query `semantic.meta_views` to discover available models and build queries via `semantic.compile_sql()`. If `false`, CoCo falls back to standard `information_schema` introspection.
+
+### Current integration state
+
+CoCo's built-in `cortex semantic-views` tooling is Snowflake-native and does not yet auto-detect `pg_semantic_view` in a connected Postgres instance. The integration today is **opportunistic**: direct CoCo to inspect the `semantic.meta_*` views and use `semantic.compile_sql()` explicitly, and it will apply the same semantic-grounded SQL generation it uses for native Snowflake Semantic Views.
+
+Closing the loop fully — automatic detection, catalog integration, and native Cortex Analyst support for Postgres semantic models — is the next integration milestone.
