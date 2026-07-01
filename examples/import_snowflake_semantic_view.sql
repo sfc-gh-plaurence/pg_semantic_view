@@ -1,0 +1,183 @@
+-- Assumes the following are already true:
+-- 1. The pg_semantic_view prototype has been installed.
+-- 2. The sample physical tables exist:
+--      public.store_sales
+--      public.item
+--      public.date_dim
+--      public.store
+--
+-- This script demonstrates a direct import of a Snowflake-shaped JSON semantic definition.
+
+SELECT semantic.import_snowflake_view(
+    p_view_name => 'tpcds_semantic_view_sm',
+    p_document => $json$
+{
+  "name": "TPCDS_SEMANTIC_VIEW_SM",
+  "comment": "TPC-DS-style semantic view example for pg_semantic_view import",
+  "source_version": "snowflake_semantic_view_v1",
+  "default_base_logical_table": "store_sales",
+  "ai_sql_generation": "Prefer qualified semantic names in generated examples and preserve PostgreSQL-compatible SQL expressions.",
+  "ai_question_categorization": "Treat questions about brands, category, year, month, and store state as valid for this semantic model.",
+  "tables": [
+    {
+      "name": "store_sales",
+      "physical_table": "public.store_sales",
+      "dataset_kind": "fact",
+      "comment": "Fact table for store sales"
+    },
+    {
+      "name": "item",
+      "physical_table": "public.item",
+      "primary_key": ["i_item_sk"],
+      "dataset_kind": "dimension",
+      "comment": "Item dimension"
+    },
+    {
+      "name": "date_dim",
+      "physical_table": "public.date_dim",
+      "primary_key": ["d_date_sk"],
+      "dataset_kind": "dimension",
+      "comment": "Date dimension"
+    },
+    {
+      "name": "store",
+      "physical_table": "public.store",
+      "primary_key": ["s_store_sk"],
+      "dataset_kind": "dimension",
+      "comment": "Store dimension"
+    }
+  ],
+  "relationships": [
+    {
+      "name": "store_sales_to_item",
+      "from": "store_sales",
+      "to": "item",
+      "from_columns": ["ss_item_sk"],
+      "to_columns": ["i_item_sk"],
+      "cardinality": "many_to_one",
+      "comment": "Join store sales to item"
+    },
+    {
+      "name": "store_sales_to_date_dim",
+      "from": "store_sales",
+      "to": "date_dim",
+      "from_columns": ["ss_sold_date_sk"],
+      "to_columns": ["d_date_sk"],
+      "cardinality": "many_to_one",
+      "comment": "Join store sales to date"
+    },
+    {
+      "name": "store_sales_to_store",
+      "from": "store_sales",
+      "to": "store",
+      "from_columns": ["ss_store_sk"],
+      "to_columns": ["s_store_sk"],
+      "cardinality": "many_to_one",
+      "comment": "Join store sales to store"
+    }
+  ],
+  "facts": [
+    {
+      "table": "store_sales",
+      "name": "Quantity",
+      "qualified_name": "StoreSales.Quantity",
+      "expression_sql": "store_sales.ss_quantity",
+      "expression_language": "postgresql_sql",
+      "data_type": "numeric",
+      "comment": "Row-level sales quantity"
+    }
+  ],
+  "dimensions": [
+    {
+      "table": "item",
+      "name": "Brand",
+      "qualified_name": "Item.Brand",
+      "expression_sql": "item.i_brand",
+      "expression_language": "postgresql_sql",
+      "data_type": "text",
+      "comment": "Brand name"
+    },
+    {
+      "table": "item",
+      "name": "Category",
+      "qualified_name": "Item.Category",
+      "expression_sql": "item.i_category",
+      "expression_language": "postgresql_sql",
+      "data_type": "text",
+      "comment": "Item category"
+    },
+    {
+      "table": "date_dim",
+      "name": "Year",
+      "qualified_name": "Date.Year",
+      "expression_sql": "date_dim.d_year",
+      "expression_language": "postgresql_sql",
+      "data_type": "integer",
+      "comment": "Calendar year"
+    },
+    {
+      "table": "date_dim",
+      "name": "Month",
+      "qualified_name": "Date.Month",
+      "expression_sql": "date_dim.d_moy",
+      "expression_language": "postgresql_sql",
+      "data_type": "integer",
+      "comment": "Month of year"
+    },
+    {
+      "table": "store",
+      "name": "State",
+      "qualified_name": "Store.State",
+      "expression_sql": "store.s_state",
+      "expression_language": "postgresql_sql",
+      "data_type": "text",
+      "comment": "Store state"
+    }
+  ],
+  "metrics": [
+    {
+      "table": "store_sales",
+      "name": "TotalSalesQuantity",
+      "qualified_name": "StoreSales.TotalSalesQuantity",
+      "expression_sql": "SUM(store_sales.ss_quantity)",
+      "expression_language": "postgresql_sql",
+      "aggregation_kind": "sum",
+      "comment": "Total quantity sold"
+    },
+    {
+      "name": "TotalSalesQuantityRounded",
+      "qualified_name": "StoreSales.TotalSalesQuantityRounded",
+      "expression_sql": "ROUND(StoreSales.TotalSalesQuantity, 0)",
+      "expression_language": "postgresql_sql",
+      "aggregation_kind": "custom",
+      "depends_on_metrics": ["StoreSales.TotalSalesQuantity"],
+      "comment": "Rounded derived metric for total quantity sold"
+    }
+  ],
+  "ai_verified_queries": [
+    {
+      "name": "top_books_brands_tx_dec_2002",
+      "question": "What are the top selling brands in Texas Books during December 2002?",
+      "sql": "SELECT * FROM semantic.query( p_semantic_view => 'tpcds_semantic_view_sm', p_metrics => ARRAY['StoreSales.TotalSalesQuantity'], p_dimensions => ARRAY['Item.Brand', 'Item.Category', 'Date.Year', 'Date.Month', 'Store.State'], p_filters => '{\"Date.Year\":{\"eq\":\"2002\"},\"Date.Month\":{\"eq\":\"12\"},\"Store.State\":{\"eq\":\"TX\"},\"Item.Category\":{\"eq\":\"Books\"}}'::jsonb ) AS t(item_brand text, item_category text, date_year integer, date_month integer, store_state text, total_sales_quantity numeric) ORDER BY total_sales_quantity DESC LIMIT 10",
+      "verified_at": 1761998400,
+      "onboarding_question": true,
+      "verified_by": "STEWARD=data_stewards"
+    }
+  ],
+  "extensions": {
+    "source": "snowflake-semantic-view-example",
+    "notes": "Adapted for PostgreSQL import_snowflake_view demonstration"
+  }
+}
+$json$::jsonb
+);
+
+SELECT semantic.compile_sql(
+    p_semantic_view => 'tpcds_semantic_view_sm',
+    p_metrics => ARRAY['StoreSales.TotalSalesQuantityRounded'],
+    p_dimensions => ARRAY['Item.Brand', 'Store.State'],
+    p_filters => '{
+      "Date.Year":{"eq":"2002"},
+      "Date.Month":{"eq":"12"}
+    }'::jsonb
+);
