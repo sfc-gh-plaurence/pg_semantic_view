@@ -1,0 +1,3 @@
+comment = 'SQL-first semantic layer prototype for PostgreSQL'
+default_version = '0.1.0'
+relocatable = false
