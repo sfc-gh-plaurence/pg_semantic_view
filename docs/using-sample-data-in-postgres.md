@@ -5,7 +5,7 @@ This guide shows how to use a small TPC-DS-style sample dataset with the current
 - standard PostgreSQL, or
 - Snowflake Postgres
 
-The goal is not to reproduce Snowflake Semantic Views syntax exactly. The goal is to use the same **basic sample-data approach** and produce **similar analytical results** with the prototype.
+The goal is not to reproduce Snowflake Semantic Views syntax exactly. The goal is to use the same **basic sample-data approach** and produce **similar analytical results** with the prototype while preserving Snowflake-style semantic names where practical.
 
 ## Original reference example
 
@@ -175,14 +175,14 @@ If you exported data externally, you can load it with `\copy` from a local machi
 
 ## Step 4: register the semantic model
 
-The current prototype uses flattened semantic names inside a view. Instead of identifiers like `Item.Brand` and `Date.Year`, define unique names such as:
+The current prototype can preserve Snowflake-style qualified semantic names. In the example below, the PostgreSQL logical tables remain lowercase (`item`, `date_dim`, `store`, `store_sales`), while the exposed semantic names stay closer to the original Snowflake example:
 
-- `item_brand`
-- `item_category`
-- `date_year`
-- `date_month`
-- `store_state`
-- `total_sales_quantity`
+- `Item.Brand`
+- `Item.Category`
+- `Date.Year`
+- `Date.Month`
+- `Store.State`
+- `StoreSales.TotalSalesQuantity`
 
 Register the semantic model like this:
 
@@ -244,28 +244,33 @@ SELECT semantic.create_view(
             jsonb_build_object(
                 'table', 'item',
                 'name', 'item_brand',
+                'qualified_name', 'Item.Brand',
                 'sql', 'item.i_brand'
             ),
             jsonb_build_object(
                 'table', 'item',
                 'name', 'item_category',
+                'qualified_name', 'Item.Category',
                 'sql', 'item.i_category'
             ),
             jsonb_build_object(
                 'table', 'date_dim',
                 'name', 'date_year',
+                'qualified_name', 'Date.Year',
                 'sql', 'date_dim.d_year',
                 'data_type', 'integer'
             ),
             jsonb_build_object(
                 'table', 'date_dim',
                 'name', 'date_month',
+                'qualified_name', 'Date.Month',
                 'sql', 'date_dim.d_moy',
                 'data_type', 'integer'
             ),
             jsonb_build_object(
                 'table', 'store',
                 'name', 'store_state',
+                'qualified_name', 'Store.State',
                 'sql', 'store.s_state'
             )
         ),
@@ -273,6 +278,7 @@ SELECT semantic.create_view(
             jsonb_build_object(
                 'table', 'store_sales',
                 'name', 'total_sales_quantity',
+                'qualified_name', 'StoreSales.TotalSalesQuantity',
                 'sql', 'SUM(store_sales.ss_quantity)',
                 'aggregation_kind', 'sum'
             )
@@ -280,6 +286,28 @@ SELECT semantic.create_view(
     )
 );
 ```
+
+### Alternative: import a Snowflake-shaped semantic definition
+
+If you already have a Snowflake semantic definition converted into JSONB, the prototype now also supports:
+
+```sql
+SELECT semantic.import_snowflake_view(
+    p_view_name => 'tpcds_semantic_view_sm',
+    p_document => '{
+      "name": "TPCDS_SEMANTIC_VIEW_SM",
+      "comment": "TPC-DS-style semantic view",
+      "tables": [],
+      "relationships": [],
+      "facts": [],
+      "dimensions": [],
+      "metrics": [],
+      "ai_verified_queries": []
+    }'::jsonb
+);
+```
+
+This path is useful when your goal is to preserve Snowflake-style semantic metadata and naming as directly as possible before compiling queries in PostgreSQL.
 
 ## Step 5: inspect the semantic metadata
 
@@ -304,19 +332,19 @@ This query follows the same business intent as the common Snowflake example:
 ```sql
 SELECT semantic.compile_sql(
     p_semantic_view => 'tpcds_semantic_view_sm',
-    p_metrics => ARRAY['total_sales_quantity'],
+    p_metrics => ARRAY['StoreSales.TotalSalesQuantity'],
     p_dimensions => ARRAY[
-        'item_brand',
-        'item_category',
-        'date_year',
-        'date_month',
-        'store_state'
+        'Item.Brand',
+        'Item.Category',
+        'Date.Year',
+        'Date.Month',
+        'Store.State'
     ],
     p_filters => '{
-      "date_year":{"eq":"2002"},
-      "date_month":{"eq":"12"},
-      "store_state":{"eq":"TX"},
-      "item_category":{"eq":"Books"}
+      "Date.Year":{"eq":"2002"},
+      "Date.Month":{"eq":"12"},
+      "Store.State":{"eq":"TX"},
+      "Item.Category":{"eq":"Books"}
     }'::jsonb
 );
 ```
@@ -329,19 +357,19 @@ This returns ordinary PostgreSQL SQL text, which is useful for debugging and com
 SELECT *
 FROM semantic.query(
     p_semantic_view => 'tpcds_semantic_view_sm',
-    p_metrics => ARRAY['total_sales_quantity'],
+    p_metrics => ARRAY['StoreSales.TotalSalesQuantity'],
     p_dimensions => ARRAY[
-        'item_brand',
-        'item_category',
-        'date_year',
-        'date_month',
-        'store_state'
+        'Item.Brand',
+        'Item.Category',
+        'Date.Year',
+        'Date.Month',
+        'Store.State'
     ],
     p_filters => '{
-      "date_year":{"eq":"2002"},
-      "date_month":{"eq":"12"},
-      "store_state":{"eq":"TX"},
-      "item_category":{"eq":"Books"}
+      "Date.Year":{"eq":"2002"},
+      "Date.Month":{"eq":"12"},
+      "Store.State":{"eq":"TX"},
+      "Item.Category":{"eq":"Books"}
     }'::jsonb
 ) AS t(
     item_brand text,
