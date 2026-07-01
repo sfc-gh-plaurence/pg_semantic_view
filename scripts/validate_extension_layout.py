@@ -11,6 +11,7 @@ README = ROOT / "README.md"
 DEMO = ROOT / "examples" / "demo.sql"
 SNOWFLAKE_DEMO = ROOT / "examples" / "demo_snowflake_postgres.sql"
 SNOWFLAKE_INSTALL_DOC = ROOT / "docs" / "installing-on-snowflake-postgres.md"
+SAMPLE_DATA_DOC = ROOT / "docs" / "using-sample-data-in-postgres.md"
 
 
 def require(path: Path) -> None:
@@ -24,7 +25,7 @@ def require_contains(text: str, needle: str, label: str) -> None:
 
 
 def main() -> None:
-    for path in (CONTROL, SQL_FILE, README, DEMO, SNOWFLAKE_DEMO, SNOWFLAKE_INSTALL_DOC):
+    for path in (CONTROL, SQL_FILE, README, DEMO, SNOWFLAKE_DEMO, SNOWFLAKE_INSTALL_DOC, SAMPLE_DATA_DOC):
         require(path)
 
     control_text = CONTROL.read_text()
@@ -32,6 +33,7 @@ def main() -> None:
     demo_text = DEMO.read_text()
     snowflake_demo_text = SNOWFLAKE_DEMO.read_text()
     install_doc_text = SNOWFLAKE_INSTALL_DOC.read_text()
+    sample_data_doc_text = SAMPLE_DATA_DOC.read_text()
 
     require_contains(control_text, "default_version = '0.1.0'", "control file version")
     require_contains(sql_text, "CREATE SCHEMA IF NOT EXISTS semantic;", "semantic schema declaration")
@@ -69,6 +71,9 @@ def main() -> None:
 
     require_contains(install_doc_text, "sql/pg_semantic_view--0.1.0.sql", "Snowflake install SQL path")
     require_contains(install_doc_text, "examples/demo_snowflake_postgres.sql", "Snowflake demo reference")
+    require_contains(sample_data_doc_text, "tpcds_semantic_view_sm", "sample data semantic view name")
+    require_contains(sample_data_doc_text, "semantic.create_view(", "sample data semantic registration example")
+    require_contains(sample_data_doc_text, "semantic.query(", "sample data semantic query example")
 
     print("extension layout validation passed")
 
