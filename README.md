@@ -4,6 +4,46 @@
 
 This repository explores a PostgreSQL extension that provides a semantic layer similar in spirit to Snowflake Semantic Views, but implemented in a PostgreSQL-friendly way.
 
+## Current prototype implementation
+
+The repository now includes a SQL-first prototype extension:
+
+- `pg_semantic_view.control`
+  - extension metadata
+- `Makefile`
+  - PGXS build/install entry point
+- `sql/pg_semantic_view--0.1.0.sql`
+  - schema, catalog tables, metadata views, and PL/pgSQL APIs
+- `examples/demo.sql`
+  - end-to-end example that creates a semantic model and compiles a query
+- `scripts/validate_extension_layout.py`
+  - lightweight static validation for the repository layout
+
+The implementation currently supports:
+
+- extension-owned catalog tables under the `semantic` schema
+- `semantic.create_view(...)` for loading a normalized JSONB model
+- helper APIs such as `add_logical_table`, `add_relationship`, `add_dimension`, `add_fact`, and `add_metric`
+- `semantic.compile_sql(...)` for generating executable PostgreSQL SQL
+- `semantic.query(...)` for executing compiled semantic queries
+- `semantic.import_osi(...)` and `semantic.export_osi(...)` as lightweight interchange helpers
+- `semantic.meta_*` views for tool and AI inspection
+
+### Quick start
+
+After installing the extension in a PostgreSQL environment:
+
+```sql
+CREATE EXTENSION pg_semantic_view;
+```
+
+Then run the example in `examples/demo.sql` to:
+
+1. create sample physical tables,
+2. register a semantic model,
+3. inspect the generated SQL,
+4. execute a semantic query through `semantic.query(...)`.
+
 The recommended prototype is:
 
 1. a function-based DDL API,
