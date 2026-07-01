@@ -28,6 +28,10 @@ The implementation currently supports:
 - `semantic.query(...)` for executing compiled semantic queries
 - `semantic.import_osi(...)` and `semantic.export_osi(...)` as lightweight interchange helpers
 - `semantic.meta_*` views for tool and AI inspection
+- qualified semantic names for dimensions, facts, and metrics, in addition to local object names
+- structured relationship metadata, including join columns and relationship expression language
+- canonical expression storage for dimensions and facts, not just metrics
+- explicit storage for SQL-generation guidance, question-categorization guidance, and verified-query metadata
 
 ### Installation guides
 
