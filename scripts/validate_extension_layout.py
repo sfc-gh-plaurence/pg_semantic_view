@@ -14,6 +14,7 @@ SNOWFLAKE_DEMO = ROOT / "examples" / "demo_snowflake_postgres.sql"
 SNOWFLAKE_INSTALL_DOC = ROOT / "docs" / "installing-on-snowflake-postgres.md"
 SAMPLE_DATA_DOC = ROOT / "docs" / "using-sample-data-in-postgres.md"
 SNOWFLAKE_IMPORT_DOC = ROOT / "docs" / "importing-snowflake-semantic-json.md"
+INTRO_BLOG_DOC = ROOT / "docs" / "introducing-pg-semantic-view.md"
 SNOWFLAKE_JSON_EXAMPLE = ROOT / "examples" / "snowflake_semantic_view_tpcds.json"
 SNOWFLAKE_IMPORT_SQL = ROOT / "examples" / "import_snowflake_semantic_view.sql"
 
@@ -38,6 +39,7 @@ def main() -> None:
         SNOWFLAKE_INSTALL_DOC,
         SAMPLE_DATA_DOC,
         SNOWFLAKE_IMPORT_DOC,
+        INTRO_BLOG_DOC,
         SNOWFLAKE_JSON_EXAMPLE,
         SNOWFLAKE_IMPORT_SQL,
     ):
@@ -50,6 +52,7 @@ def main() -> None:
     install_doc_text = SNOWFLAKE_INSTALL_DOC.read_text()
     sample_data_doc_text = SAMPLE_DATA_DOC.read_text()
     snowflake_import_doc_text = SNOWFLAKE_IMPORT_DOC.read_text()
+    intro_blog_doc_text = INTRO_BLOG_DOC.read_text()
     snowflake_json_example_text = SNOWFLAKE_JSON_EXAMPLE.read_text()
     snowflake_import_sql_text = SNOWFLAKE_IMPORT_SQL.read_text()
 
@@ -109,6 +112,21 @@ def main() -> None:
         snowflake_import_doc_text,
         "examples/snowflake_semantic_view_tpcds.json",
         "Snowflake JSON example reference",
+    )
+    require_contains(
+        intro_blog_doc_text,
+        "https://www.snowflake.com/en/blog/open-semantic-interchanges-specs-finalized/",
+        "OSI initiative reference in introduction post",
+    )
+    require_contains(
+        intro_blog_doc_text,
+        "semantic.query(",
+        "semantic query example in introduction post",
+    )
+    require_contains(
+        intro_blog_doc_text,
+        "compliant with the OSI initiative",
+        "OSI compliance discussion in introduction post",
     )
     require_contains(
         snowflake_import_sql_text,
