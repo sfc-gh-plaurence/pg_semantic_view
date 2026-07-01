@@ -7,6 +7,20 @@ This guide shows how to use a small TPC-DS-style sample dataset with the current
 
 The goal is not to reproduce Snowflake Semantic Views syntax exactly. The goal is to use the same **basic sample-data approach** and produce **similar analytical results** with the prototype.
 
+## Original reference example
+
+This walkthrough is intentionally modeled after Snowflake's semantic-view getting-started example so that you can compare the two approaches side by side:
+
+- Chanin Nantasenamat, **"Getting Started with Snowflake Semantic View"**
+  - https://medium.com/snowflake/getting-started-with-snowflake-semantic-view-7eced29abe6f
+
+For comparison purposes:
+
+- this guide keeps the same general star-schema pattern
+- it uses a similar TPC-DS-style subset built around `store_sales`, `item`, `date_dim`, and `store`
+- it targets similar business questions, such as top-selling brands by filtered sales quantity
+- it translates Snowflake-native semantic-view syntax into the prototype's `semantic.create_view(...)`, `semantic.compile_sql(...)`, and `semantic.query(...)` APIs
+
 ## What this guide covers
 
 This walkthrough shows how to:

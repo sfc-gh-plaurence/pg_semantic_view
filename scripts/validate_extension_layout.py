@@ -71,6 +71,11 @@ def main() -> None:
 
     require_contains(install_doc_text, "sql/pg_semantic_view--0.1.0.sql", "Snowflake install SQL path")
     require_contains(install_doc_text, "examples/demo_snowflake_postgres.sql", "Snowflake demo reference")
+    require_contains(
+        sample_data_doc_text,
+        "https://medium.com/snowflake/getting-started-with-snowflake-semantic-view-7eced29abe6f",
+        "original Snowflake sample-data reference",
+    )
     require_contains(sample_data_doc_text, "tpcds_semantic_view_sm", "sample data semantic view name")
     require_contains(sample_data_doc_text, "semantic.create_view(", "sample data semantic registration example")
     require_contains(sample_data_doc_text, "semantic.query(", "sample data semantic query example")
