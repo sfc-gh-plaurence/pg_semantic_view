@@ -9,6 +9,8 @@ CONTROL = ROOT / "pg_semantic_view.control"
 SQL_FILE = ROOT / "sql" / "pg_semantic_view--0.1.0.sql"
 README = ROOT / "README.md"
 DEMO = ROOT / "examples" / "demo.sql"
+SNOWFLAKE_DEMO = ROOT / "examples" / "demo_snowflake_postgres.sql"
+SNOWFLAKE_INSTALL_DOC = ROOT / "docs" / "installing-on-snowflake-postgres.md"
 
 
 def require(path: Path) -> None:
@@ -22,12 +24,14 @@ def require_contains(text: str, needle: str, label: str) -> None:
 
 
 def main() -> None:
-    for path in (CONTROL, SQL_FILE, README, DEMO):
+    for path in (CONTROL, SQL_FILE, README, DEMO, SNOWFLAKE_DEMO, SNOWFLAKE_INSTALL_DOC):
         require(path)
 
     control_text = CONTROL.read_text()
     sql_text = SQL_FILE.read_text()
     demo_text = DEMO.read_text()
+    snowflake_demo_text = SNOWFLAKE_DEMO.read_text()
+    install_doc_text = SNOWFLAKE_INSTALL_DOC.read_text()
 
     require_contains(control_text, "default_version = '0.1.0'", "control file version")
     require_contains(sql_text, "CREATE SCHEMA IF NOT EXISTS semantic;", "semantic schema declaration")
@@ -59,6 +63,12 @@ def main() -> None:
 
     if "SELECT semantic.create_view(" not in demo_text or "SELECT semantic.compile_sql(" not in demo_text:
         raise SystemExit("demo.sql does not exercise the prototype entry points")
+
+    if re.search(r"(?mi)^\s*CREATE EXTENSION\s+pg_semantic_view\s*;", snowflake_demo_text):
+        raise SystemExit("Snowflake demo should not use CREATE EXTENSION pg_semantic_view")
+
+    require_contains(install_doc_text, "sql/pg_semantic_view--0.1.0.sql", "Snowflake install SQL path")
+    require_contains(install_doc_text, "examples/demo_snowflake_postgres.sql", "Snowflake demo reference")
 
     print("extension layout validation passed")
 
