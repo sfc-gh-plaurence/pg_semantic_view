@@ -306,6 +306,391 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION semantic.resolve_dimension_id(
+    p_view_id bigint,
+    p_dimension_identifier text
+) RETURNS bigint
+LANGUAGE plpgsql
+STABLE
+AS $function$
+DECLARE
+    v_dimension_id bigint;
+    v_match_count integer;
+BEGIN
+    SELECT id, count(*) OVER ()
+    INTO v_dimension_id, v_match_count
+    FROM semantic.dimensions
+    WHERE view_id = p_view_id
+      AND qualified_name = p_dimension_identifier;
+
+    IF v_dimension_id IS NOT NULL THEN
+        RETURN v_dimension_id;
+    END IF;
+
+    SELECT id, count(*) OVER ()
+    INTO v_dimension_id, v_match_count
+    FROM semantic.dimensions
+    WHERE view_id = p_view_id
+      AND name = p_dimension_identifier;
+
+    IF v_dimension_id IS NULL THEN
+        RAISE EXCEPTION 'Dimension identifier "%" does not exist in semantic view id %.', p_dimension_identifier, p_view_id;
+    END IF;
+
+    IF v_match_count > 1 THEN
+        RAISE EXCEPTION 'Dimension identifier "%" is ambiguous in semantic view id %. Use a qualified name.', p_dimension_identifier, p_view_id;
+    END IF;
+
+    RETURN v_dimension_id;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.resolve_fact_id(
+    p_view_id bigint,
+    p_fact_identifier text
+) RETURNS bigint
+LANGUAGE plpgsql
+STABLE
+AS $function$
+DECLARE
+    v_fact_id bigint;
+    v_match_count integer;
+BEGIN
+    SELECT id, count(*) OVER ()
+    INTO v_fact_id, v_match_count
+    FROM semantic.facts
+    WHERE view_id = p_view_id
+      AND qualified_name = p_fact_identifier;
+
+    IF v_fact_id IS NOT NULL THEN
+        RETURN v_fact_id;
+    END IF;
+
+    SELECT id, count(*) OVER ()
+    INTO v_fact_id, v_match_count
+    FROM semantic.facts
+    WHERE view_id = p_view_id
+      AND name = p_fact_identifier;
+
+    IF v_fact_id IS NULL THEN
+        RAISE EXCEPTION 'Fact identifier "%" does not exist in semantic view id %.', p_fact_identifier, p_view_id;
+    END IF;
+
+    IF v_match_count > 1 THEN
+        RAISE EXCEPTION 'Fact identifier "%" is ambiguous in semantic view id %. Use a qualified name.', p_fact_identifier, p_view_id;
+    END IF;
+
+    RETURN v_fact_id;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.resolve_filter_object(
+    p_view_id bigint,
+    p_identifier text
+) RETURNS TABLE(
+    object_kind text,
+    object_name text,
+    qualified_name text,
+    expression_sql text,
+    logical_table_id bigint,
+    visibility text
+)
+LANGUAGE plpgsql
+STABLE
+AS $function$
+DECLARE
+    v_match_count integer;
+BEGIN
+    SELECT candidates.object_kind,
+           candidates.object_name,
+           candidates.qualified_name,
+           candidates.expression_sql,
+           candidates.logical_table_id,
+           candidates.visibility,
+           candidates.match_count
+    INTO object_kind,
+         object_name,
+         qualified_name,
+         expression_sql,
+         logical_table_id,
+         visibility,
+         v_match_count
+    FROM (
+        SELECT candidate.*,
+               count(*) OVER () AS match_count
+        FROM (
+            SELECT 'dimension'::text AS object_kind,
+                   d.name AS object_name,
+                   d.qualified_name,
+                   d.expression_sql,
+                   d.logical_table_id,
+                   'public'::text AS visibility
+            FROM semantic.dimensions d
+            WHERE d.view_id = p_view_id
+              AND d.qualified_name = p_identifier
+            UNION ALL
+            SELECT 'fact'::text AS object_kind,
+                   f.name AS object_name,
+                   f.qualified_name,
+                   f.expression_sql,
+                   f.logical_table_id,
+                   f.visibility
+            FROM semantic.facts f
+            WHERE f.view_id = p_view_id
+              AND f.qualified_name = p_identifier
+        ) candidate
+    ) candidates;
+
+    IF object_kind IS NOT NULL THEN
+        IF v_match_count > 1 THEN
+            RAISE EXCEPTION 'Filter identifier "%" is ambiguous in semantic view id %. Use a unique name.', p_identifier, p_view_id;
+        END IF;
+
+        RETURN NEXT;
+        RETURN;
+    END IF;
+
+    SELECT candidates.object_kind,
+           candidates.object_name,
+           candidates.qualified_name,
+           candidates.expression_sql,
+           candidates.logical_table_id,
+           candidates.visibility,
+           candidates.match_count
+    INTO object_kind,
+         object_name,
+         qualified_name,
+         expression_sql,
+         logical_table_id,
+         visibility,
+         v_match_count
+    FROM (
+        SELECT candidate.*,
+               count(*) OVER () AS match_count
+        FROM (
+            SELECT 'dimension'::text AS object_kind,
+                   d.name AS object_name,
+                   d.qualified_name,
+                   d.expression_sql,
+                   d.logical_table_id,
+                   'public'::text AS visibility
+            FROM semantic.dimensions d
+            WHERE d.view_id = p_view_id
+              AND d.name = p_identifier
+            UNION ALL
+            SELECT 'fact'::text AS object_kind,
+                   f.name AS object_name,
+                   f.qualified_name,
+                   f.expression_sql,
+                   f.logical_table_id,
+                   f.visibility
+            FROM semantic.facts f
+            WHERE f.view_id = p_view_id
+              AND f.name = p_identifier
+        ) candidate
+    ) candidates;
+
+    IF object_kind IS NULL THEN
+        RAISE EXCEPTION 'Filter identifier "%" does not match a dimension or fact in semantic view id %.', p_identifier, p_view_id;
+    END IF;
+
+    IF v_match_count > 1 THEN
+        RAISE EXCEPTION 'Filter identifier "%" is ambiguous in semantic view id %. Use a qualified name.', p_identifier, p_view_id;
+    END IF;
+
+    RETURN NEXT;
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.regex_escape(
+    p_text text
+) RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $function$
+    SELECT regexp_replace($1, '([][(){}.*+?^$|\\-])', E'\\\\\\1', 'g');
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.replace_qualified_identifier(
+    p_source text,
+    p_identifier text,
+    p_replacement text
+) RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $function$
+DECLARE
+    v_pattern text;
+BEGIN
+    IF p_source IS NULL OR p_identifier IS NULL OR trim(p_identifier) = '' THEN
+        RETURN p_source;
+    END IF;
+
+    v_pattern := '(^|[^[:alnum:]_])(' || semantic.regex_escape(p_identifier) || ')([^[:alnum:]_]|$)';
+
+    RETURN regexp_replace(
+        p_source,
+        v_pattern,
+        E'\\1' || p_replacement || E'\\3',
+        'g'
+    );
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.replace_local_identifier(
+    p_source text,
+    p_identifier text,
+    p_replacement text
+) RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $function$
+DECLARE
+    v_pattern text;
+BEGIN
+    IF p_source IS NULL OR p_identifier IS NULL OR trim(p_identifier) = '' THEN
+        RETURN p_source;
+    END IF;
+
+    v_pattern := '(^|[^[:alnum:]_\\.])(' || semantic.regex_escape(p_identifier) || ')([^[:alnum:]_]|$)';
+
+    RETURN regexp_replace(
+        p_source,
+        v_pattern,
+        E'\\1' || p_replacement || E'\\3',
+        'g'
+    );
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.build_equi_join_sql(
+    p_from_table text,
+    p_from_columns text[],
+    p_to_table text,
+    p_to_columns text[]
+) RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $function$
+DECLARE
+    v_join_parts text[] := ARRAY[]::text[];
+    v_index integer;
+BEGIN
+    IF COALESCE(cardinality(p_from_columns), 0) = 0 OR COALESCE(cardinality(p_to_columns), 0) = 0 THEN
+        RETURN NULL;
+    END IF;
+
+    IF cardinality(p_from_columns) <> cardinality(p_to_columns) THEN
+        RAISE EXCEPTION 'Relationship column lists must have the same length.';
+    END IF;
+
+    FOR v_index IN 1..cardinality(p_from_columns) LOOP
+        v_join_parts := v_join_parts || format(
+            '%I.%I = %I.%I',
+            p_from_table,
+            p_from_columns[v_index],
+            p_to_table,
+            p_to_columns[v_index]
+        );
+    END LOOP;
+
+    RETURN array_to_string(v_join_parts, ' AND ');
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.resolve_metric_expression(
+    p_view_id bigint,
+    p_metric_identifier text,
+    p_seen_qualified_names text[] DEFAULT ARRAY[]::text[]
+) RETURNS TABLE(
+    metric_name text,
+    qualified_name text,
+    expression_sql text,
+    required_table_ids bigint[],
+    visibility text
+)
+LANGUAGE plpgsql
+STABLE
+AS $function$
+DECLARE
+    v_metric_record semantic.metrics%ROWTYPE;
+    v_dependency_record record;
+    v_dependency_result record;
+    v_expression text;
+    v_required_table_ids bigint[] := ARRAY[]::bigint[];
+BEGIN
+    SELECT *
+    INTO v_metric_record
+    FROM semantic.metrics
+    WHERE id = semantic.resolve_metric_id(p_view_id, p_metric_identifier);
+
+    IF v_metric_record.qualified_name = ANY(COALESCE(p_seen_qualified_names, ARRAY[]::text[])) THEN
+        RAISE EXCEPTION 'Metric dependency cycle detected for "%".', v_metric_record.qualified_name;
+    END IF;
+
+    IF v_metric_record.logical_table_id IS NOT NULL THEN
+        metric_name := v_metric_record.name;
+        qualified_name := v_metric_record.qualified_name;
+        expression_sql := v_metric_record.expression_sql;
+        required_table_ids := ARRAY[v_metric_record.logical_table_id];
+        visibility := v_metric_record.visibility;
+        RETURN NEXT;
+        RETURN;
+    END IF;
+
+    v_expression := v_metric_record.expression_sql;
+
+    FOR v_dependency_record IN
+        SELECT dep_metric.name,
+               dep_metric.qualified_name
+        FROM semantic.metric_dependencies md
+        JOIN semantic.metrics dep_metric
+          ON dep_metric.id = md.depends_on_metric_id
+        WHERE md.metric_id = v_metric_record.id
+        ORDER BY dep_metric.qualified_name
+    LOOP
+        SELECT resolved.metric_name,
+               resolved.qualified_name,
+               resolved.expression_sql,
+               resolved.required_table_ids,
+               resolved.visibility
+        INTO v_dependency_result
+        FROM semantic.resolve_metric_expression(
+            p_view_id,
+            v_dependency_record.qualified_name,
+            COALESCE(p_seen_qualified_names, ARRAY[]::text[]) || v_metric_record.qualified_name
+        ) AS resolved;
+
+        v_expression := semantic.replace_qualified_identifier(
+            v_expression,
+            v_dependency_record.qualified_name,
+            '(' || v_dependency_result.expression_sql || ')'
+        );
+
+        IF v_dependency_record.name <> v_dependency_record.qualified_name THEN
+            v_expression := semantic.replace_local_identifier(
+                v_expression,
+                v_dependency_record.name,
+                '(' || v_dependency_result.expression_sql || ')'
+            );
+        END IF;
+
+        v_required_table_ids := v_required_table_ids || COALESCE(v_dependency_result.required_table_ids, ARRAY[]::bigint[]);
+    END LOOP;
+
+    IF COALESCE(cardinality(v_required_table_ids), 0) = 0 THEN
+        RAISE EXCEPTION 'Derived metric "%" requires dependency metadata or a base logical table for compilation.', v_metric_record.qualified_name;
+    END IF;
+
+    metric_name := v_metric_record.name;
+    qualified_name := v_metric_record.qualified_name;
+    expression_sql := v_expression;
+    required_table_ids := v_required_table_ids;
+    visibility := v_metric_record.visibility;
+    RETURN NEXT;
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION semantic.register_metric_dependencies(
     p_view_name text,
     p_metric_name text,
@@ -1195,6 +1580,202 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION semantic.import_snowflake_view(
+    p_view_name text,
+    p_document jsonb
+) RETURNS bigint
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    v_model_name text;
+    v_definition jsonb;
+    v_logical_tables jsonb := '[]'::jsonb;
+    v_relationships jsonb := '[]'::jsonb;
+    v_dimensions jsonb := '[]'::jsonb;
+    v_facts jsonb := '[]'::jsonb;
+    v_metrics jsonb := '[]'::jsonb;
+    v_examples jsonb := '[]'::jsonb;
+    v_table jsonb;
+    v_relationship jsonb;
+    v_dimension jsonb;
+    v_fact jsonb;
+    v_metric jsonb;
+    v_example jsonb;
+    v_logical_table_name text;
+    v_from_table text;
+    v_to_table text;
+    v_from_columns text[];
+    v_to_columns text[];
+    v_join_sql text;
+BEGIN
+    PERFORM semantic.assert_jsonb_type(p_document, 'object', 'document');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'tables', 'array', 'tables');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'relationships', 'array', 'relationships');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'facts', 'array', 'facts');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'dimensions', 'array', 'dimensions');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'metrics', 'array', 'metrics');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'ai_verified_queries', 'array', 'ai_verified_queries');
+    PERFORM semantic.assert_jsonb_type(p_document -> 'extensions', 'object', 'extensions');
+
+    v_model_name := COALESCE(NULLIF(trim(p_view_name), ''), p_document ->> 'name');
+
+    IF coalesce(v_model_name, '') = '' THEN
+        RAISE EXCEPTION 'Snowflake import requires a semantic view name.';
+    END IF;
+
+    FOR v_table IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'tables', '[]'::jsonb))
+    LOOP
+        v_logical_table_name := COALESCE(v_table ->> 'alias', v_table ->> 'name');
+
+        v_logical_tables := v_logical_tables || jsonb_build_array(
+            jsonb_build_object(
+                'name', v_logical_table_name,
+                'physical_table', COALESCE(v_table ->> 'physical_table', v_table ->> 'table_name', v_table ->> 'source'),
+                'primary_key', COALESCE(v_table -> 'primary_key', '[]'::jsonb),
+                'unique_keys', COALESCE(v_table -> 'unique_keys', '[]'::jsonb),
+                'alias', COALESCE(v_table ->> 'alias', v_logical_table_name),
+                'dataset_kind', COALESCE(v_table ->> 'dataset_kind', 'fact'),
+                'source_mapping', COALESCE(v_table -> 'source_mapping', '{}'::jsonb),
+                'description', COALESCE(v_table ->> 'comment', v_table ->> 'description'),
+                'extensions', COALESCE(v_table -> 'extensions', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    FOR v_relationship IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'relationships', '[]'::jsonb))
+    LOOP
+        v_from_table := COALESCE(v_relationship ->> 'from', v_relationship #>> '{from,dataset}');
+        v_to_table := COALESCE(v_relationship ->> 'to', v_relationship #>> '{to,dataset}');
+        v_from_columns := semantic.jsonb_to_text_array(COALESCE(v_relationship -> 'from_columns', v_relationship -> 'columns'));
+        v_to_columns := semantic.jsonb_to_text_array(COALESCE(v_relationship -> 'to_columns', v_relationship -> 'references_columns'));
+        v_join_sql := COALESCE(
+            v_relationship ->> 'join_sql',
+            v_relationship ->> 'on',
+            semantic.build_equi_join_sql(v_from_table, v_from_columns, v_to_table, v_to_columns)
+        );
+
+        v_relationships := v_relationships || jsonb_build_array(
+            jsonb_build_object(
+                'name', COALESCE(v_relationship ->> 'name', semantic.build_qualified_name(v_from_table, v_to_table)),
+                'from', v_from_table,
+                'to', v_to_table,
+                'join_sql', v_join_sql,
+                'from_columns', to_jsonb(COALESCE(v_from_columns, ARRAY[]::text[])),
+                'to_columns', to_jsonb(COALESCE(v_to_columns, ARRAY[]::text[])),
+                'cardinality', COALESCE(v_relationship ->> 'cardinality', 'many_to_one'),
+                'relationship_expression_language', COALESCE(v_relationship ->> 'relationship_expression_language', 'postgresql_sql'),
+                'description', COALESCE(v_relationship ->> 'comment', v_relationship ->> 'description'),
+                'extensions', COALESCE(v_relationship -> 'extensions', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    FOR v_fact IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'facts', '[]'::jsonb))
+    LOOP
+        v_facts := v_facts || jsonb_build_array(
+            jsonb_build_object(
+                'table', COALESCE(v_fact ->> 'table', split_part(v_fact ->> 'qualified_name', '.', 1)),
+                'name', v_fact ->> 'name',
+                'qualified_name', COALESCE(v_fact ->> 'qualified_name', semantic.build_qualified_name(v_fact ->> 'table', v_fact ->> 'name')),
+                'expression_sql', COALESCE(v_fact ->> 'expression_sql', v_fact ->> 'expression', v_fact ->> 'sql'),
+                'expression_canonical', COALESCE(v_fact -> 'expression_canonical', v_fact -> 'expression_ast'),
+                'expression_language', COALESCE(v_fact ->> 'expression_language', 'postgresql_sql'),
+                'visibility', COALESCE(v_fact ->> 'visibility', 'public'),
+                'description', COALESCE(v_fact ->> 'comment', v_fact ->> 'description'),
+                'synonyms', COALESCE(v_fact -> 'synonyms', '[]'::jsonb),
+                'data_type', v_fact ->> 'data_type',
+                'extensions', COALESCE(v_fact -> 'extensions', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    FOR v_dimension IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'dimensions', '[]'::jsonb))
+    LOOP
+        v_dimensions := v_dimensions || jsonb_build_array(
+            jsonb_build_object(
+                'table', COALESCE(v_dimension ->> 'table', split_part(v_dimension ->> 'qualified_name', '.', 1)),
+                'name', v_dimension ->> 'name',
+                'qualified_name', COALESCE(v_dimension ->> 'qualified_name', semantic.build_qualified_name(v_dimension ->> 'table', v_dimension ->> 'name')),
+                'expression_sql', COALESCE(v_dimension ->> 'expression_sql', v_dimension ->> 'expression', v_dimension ->> 'sql'),
+                'expression_canonical', COALESCE(v_dimension -> 'expression_canonical', v_dimension -> 'expression_ast'),
+                'expression_language', COALESCE(v_dimension ->> 'expression_language', 'postgresql_sql'),
+                'description', COALESCE(v_dimension ->> 'comment', v_dimension ->> 'description'),
+                'synonyms', COALESCE(v_dimension -> 'synonyms', '[]'::jsonb),
+                'data_type', COALESCE(v_dimension ->> 'data_type', v_dimension ->> 'type'),
+                'time_granularity', v_dimension #>> '{type_params,time_granularity}',
+                'extensions', COALESCE(v_dimension -> 'extensions', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    FOR v_metric IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'metrics', '[]'::jsonb))
+    LOOP
+        v_metrics := v_metrics || jsonb_build_array(
+            jsonb_build_object(
+                'table', COALESCE(v_metric ->> 'table', split_part(v_metric ->> 'qualified_name', '.', 1)),
+                'name', v_metric ->> 'name',
+                'qualified_name', COALESCE(v_metric ->> 'qualified_name', semantic.build_qualified_name(v_metric ->> 'table', v_metric ->> 'name')),
+                'expression_sql', COALESCE(v_metric ->> 'expression_sql', v_metric ->> 'expression', v_metric ->> 'sql'),
+                'expression_canonical', COALESCE(v_metric -> 'expression_canonical', v_metric -> 'expression_ast'),
+                'expression_language', COALESCE(v_metric ->> 'expression_language', 'postgresql_sql'),
+                'description', COALESCE(v_metric ->> 'comment', v_metric ->> 'description'),
+                'visibility', COALESCE(v_metric ->> 'visibility', 'public'),
+                'synonyms', COALESCE(v_metric -> 'synonyms', '[]'::jsonb),
+                'aggregation_kind', COALESCE(v_metric ->> 'aggregation_kind', 'custom'),
+                'depends_on_metrics', COALESCE(v_metric -> 'depends_on_metrics', '[]'::jsonb),
+                'extensions', COALESCE(v_metric -> 'extensions', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    FOR v_example IN
+        SELECT value
+        FROM jsonb_array_elements(COALESCE(p_document -> 'ai_verified_queries', '[]'::jsonb))
+    LOOP
+        v_examples := v_examples || jsonb_build_array(
+            jsonb_build_object(
+                'name', v_example ->> 'name',
+                'question', v_example ->> 'question',
+                'sql', COALESCE(v_example ->> 'sql', v_example ->> 'query'),
+                'verified_at', COALESCE((v_example ->> 'verified_at')::bigint, NULL),
+                'onboarding_question', COALESCE((v_example ->> 'onboarding_question')::boolean, false),
+                'verified_by', v_example ->> 'verified_by',
+                'context', COALESCE(v_example -> 'context', '{}'::jsonb)
+            )
+        );
+    END LOOP;
+
+    v_definition := jsonb_build_object(
+        'description', COALESCE(p_document ->> 'comment', p_document ->> 'description'),
+        'default_base_logical_table', p_document ->> 'default_base_logical_table',
+        'source_format', 'snowflake',
+        'source_version', COALESCE(p_document ->> 'source_version', 'snowflake_semantic_view'),
+        'sql_generation_instructions', COALESCE(p_document ->> 'ai_sql_generation', p_document #>> '{ai_context,sql_generation_instructions}'),
+        'question_categorization_instructions', COALESCE(p_document ->> 'ai_question_categorization', p_document #>> '{ai_context,question_categorization_instructions}'),
+        'ai_context', COALESCE(p_document -> 'ai_context', '{}'::jsonb),
+        'extensions', COALESCE(p_document -> 'extensions', '{}'::jsonb),
+        'logical_tables', v_logical_tables,
+        'relationships', v_relationships,
+        'facts', v_facts,
+        'dimensions', v_dimensions,
+        'metrics', v_metrics,
+        'examples', v_examples
+    );
+
+    RETURN semantic.create_view(v_model_name, v_definition);
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION semantic.export_osi(
     p_model_name text
 ) RETURNS jsonb
@@ -1337,7 +1918,7 @@ BEGIN
                             'depends_on_metrics',
                                 COALESCE(
                                     (
-                                        SELECT jsonb_agg(dep_metric.name ORDER BY dep_metric.name)
+                                        SELECT jsonb_agg(dep_metric.qualified_name ORDER BY dep_metric.qualified_name)
                                         FROM semantic.metric_dependencies md
                                         JOIN semantic.metrics dep_metric
                                           ON dep_metric.id = md.depends_on_metric_id
@@ -1432,12 +2013,12 @@ BEGIN
 
     FOREACH v_dimension_name IN ARRAY COALESCE(p_dimensions, ARRAY[]::text[]) LOOP
         SELECT d.name,
+               d.qualified_name,
                d.expression_sql,
                d.logical_table_id
         INTO v_dimension_record
         FROM semantic.dimensions d
-        WHERE d.view_id = v_view_id
-          AND d.name = v_dimension_name;
+        WHERE d.id = semantic.resolve_dimension_id(v_view_id, v_dimension_name);
 
         IF NOT FOUND THEN
             RAISE EXCEPTION 'Dimension "%" does not exist in semantic view "%".', v_dimension_name, p_semantic_view;
@@ -1449,14 +2030,13 @@ BEGIN
     END LOOP;
 
     FOREACH v_metric_name IN ARRAY COALESCE(p_metrics, ARRAY[]::text[]) LOOP
-        SELECT m.name,
-               m.expression_sql,
-               m.logical_table_id,
-               m.visibility
+        SELECT resolved.metric_name,
+               resolved.qualified_name,
+               resolved.expression_sql,
+               resolved.required_table_ids,
+               resolved.visibility
         INTO v_metric_record
-        FROM semantic.metrics m
-        WHERE m.view_id = v_view_id
-          AND m.name = v_metric_name;
+        FROM semantic.resolve_metric_expression(v_view_id, v_metric_name) AS resolved;
 
         IF NOT FOUND THEN
             RAISE EXCEPTION 'Metric "%" does not exist in semantic view "%".', v_metric_name, p_semantic_view;
@@ -1466,12 +2046,8 @@ BEGIN
             RAISE EXCEPTION 'Metric "%" is private and cannot be queried directly.', v_metric_name;
         END IF;
 
-        IF v_metric_record.logical_table_id IS NULL THEN
-            RAISE EXCEPTION 'Derived metric "%" is registered but direct compilation for derived metrics is not implemented in this prototype.', v_metric_name;
-        END IF;
-
-        v_select_items := v_select_items || format('%s AS %I', v_metric_record.expression_sql, v_metric_record.name);
-        v_required_table_ids := array_append(v_required_table_ids, v_metric_record.logical_table_id);
+        v_select_items := v_select_items || format('%s AS %I', v_metric_record.expression_sql, v_metric_record.metric_name);
+        v_required_table_ids := v_required_table_ids || COALESCE(v_metric_record.required_table_ids, ARRAY[]::bigint[]);
     END LOOP;
 
     FOR v_filter_name, v_filter_spec IN
@@ -1480,29 +2056,14 @@ BEGIN
     LOOP
         PERFORM semantic.assert_jsonb_type(v_filter_spec, 'object', format('filter for %s', v_filter_name));
 
-        SELECT object_kind,
-               expression_sql,
-               logical_table_id,
-               visibility
+        SELECT resolved.object_kind,
+               resolved.object_name,
+               resolved.qualified_name,
+               resolved.expression_sql,
+               resolved.logical_table_id,
+               resolved.visibility
         INTO v_filter_record
-        FROM (
-            SELECT 'dimension'::text AS object_kind,
-                   d.expression_sql,
-                   d.logical_table_id,
-                   'public'::text AS visibility
-            FROM semantic.dimensions d
-            WHERE d.view_id = v_view_id
-              AND d.name = v_filter_name
-            UNION ALL
-            SELECT 'fact'::text AS object_kind,
-                   f.expression_sql,
-                   f.logical_table_id,
-                   f.visibility
-            FROM semantic.facts f
-            WHERE f.view_id = v_view_id
-              AND f.name = v_filter_name
-        ) candidates
-        LIMIT 1;
+        FROM semantic.resolve_filter_object(v_view_id, v_filter_name) AS resolved;
 
         IF NOT FOUND THEN
             RAISE EXCEPTION 'Filter "%" does not match a dimension or fact in semantic view "%".', v_filter_name, p_semantic_view;

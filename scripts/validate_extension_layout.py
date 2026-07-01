@@ -51,6 +51,7 @@ def main() -> None:
         "CREATE OR REPLACE FUNCTION semantic.compile_sql(",
         "CREATE OR REPLACE FUNCTION semantic.query(",
         "CREATE OR REPLACE FUNCTION semantic.import_osi(",
+        "CREATE OR REPLACE FUNCTION semantic.import_snowflake_view(",
         "CREATE OR REPLACE FUNCTION semantic.export_osi(",
         "CREATE OR REPLACE FUNCTION semantic.build_qualified_name(",
         "CREATE OR REPLACE FUNCTION semantic.resolve_metric_id(",
