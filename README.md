@@ -255,6 +255,108 @@ This keeps the semantic layer transparent and easy to test.
 - non-additive metrics
 - window metrics
 
+## OSI compatibility
+
+This prototype should be compatible with the Open Semantic Interchange (OSI) effort, but OSI should be treated as an interchange format rather than as the exact internal storage layout.
+
+The recommended approach is:
+
+- use normalized PostgreSQL catalog tables as the internal model
+- import OSI YAML or JSON into those tables
+- compile and execute semantic queries from the normalized model
+- export the model back to OSI when interoperability is needed
+
+This keeps the extension PostgreSQL-friendly while still allowing exchange with external semantic tools, AI agents, and BI platforms that adopt OSI.
+
+### Compatibility model
+
+The prototype should separate:
+
+- **canonical semantic metadata**: business entities, relationships, metrics, dimensions, context, and extensions
+- **PostgreSQL compiled form**: SQL expressions, query plans, and runtime execution details specific to PostgreSQL
+
+This means the extension should avoid storing semantics only as raw PostgreSQL SQL strings. When possible, store enough canonical structure to reconstruct or export an OSI-compatible definition later.
+
+### Proposed prototype-to-OSI mapping
+
+| Prototype object | OSI concept | Notes |
+| --- | --- | --- |
+| `semantic.views` | semantic model | Stores the top-level model identity, description, AI context, and model-level options. |
+| `semantic.logical_tables` | datasets | Each logical table maps to an OSI dataset with source mapping to a physical PostgreSQL table. |
+| `semantic.relationships` | relationships | Stores join edges, join keys, and cardinality metadata between datasets. |
+| `semantic.dimensions` | dimensions | Maps business-facing grouping and filtering fields to dataset fields or expressions. |
+| `semantic.facts` | dataset fields / measure inputs | Acts as row-level building blocks for metrics and dimensions. |
+| `semantic.metrics` | metrics / measures | Stores aggregate business calculations and derived metrics. |
+| `semantic.examples` | AI context / example queries / contextual metadata | Holds verified query examples, prompt hints, and tool-facing usage guidance. |
+| `extensions jsonb` columns | `custom_extensions` | Preserves vendor-specific or OSI fields that the prototype does not interpret directly. |
+
+### Recommended schema additions for OSI support
+
+To support strong OSI import and export, the prototype should add a small amount of interchange-oriented metadata:
+
+- `semantic.views`
+  - `source_format text`
+  - `source_version text`
+  - `ai_context jsonb`
+  - `extensions jsonb`
+- `semantic.logical_tables`
+  - `dataset_kind text`
+  - `source_mapping jsonb`
+  - `extensions jsonb`
+- `semantic.dimensions`
+  - `data_type text`
+  - `time_granularity text`
+  - `extensions jsonb`
+- `semantic.facts`
+  - `data_type text`
+  - `extensions jsonb`
+- `semantic.metrics`
+  - `expression_canonical jsonb`
+  - `expression_sql text`
+  - `expression_language text`
+  - `extensions jsonb`
+
+These fields are intended to preserve canonical semantic meaning, not just the compiled PostgreSQL representation.
+
+### Import and export APIs
+
+The prototype should expose explicit interchange functions:
+
+```sql
+SELECT semantic.import_osi(
+    model_name => 'corporate_revenue',
+    document => $json$
+      {
+        "name": "corporate_revenue"
+      }
+    $json$::jsonb
+);
+
+SELECT semantic.export_osi(
+    model_name => 'corporate_revenue'
+);
+```
+
+Optional convenience wrappers can support YAML import and export, but the core storage and validation path should use JSONB inside PostgreSQL.
+
+### Practical compatibility rules
+
+To remain OSI-friendly, the prototype should follow these rules:
+
+- preserve unknown OSI fields in `extensions jsonb` instead of dropping them
+- allow round-tripping of supported models even when some fields are not executed natively
+- keep PostgreSQL-specific execution details out of the canonical export when possible
+- treat raw SQL expressions as a compiled target, not as the only representation of a metric
+
+### Expected compatibility level
+
+- **Structural compatibility:** high
+  - the prototype already matches the core OSI concepts of models, datasets, relationships, dimensions, and metrics
+- **Import/export compatibility:** moderate to high
+  - this requires explicit adapter functions and extension-preserving storage
+- **Full semantic round-trip fidelity:** partial at first
+  - advanced expressions and vendor-specific semantics may require staged support or partial passthrough
+
 ## Why this is the right minimum architecture
 
 This approach proves the hardest and most valuable parts of the project first:
