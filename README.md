@@ -38,6 +38,7 @@ The implementation currently supports:
 
 - Standard PostgreSQL installation: use `CREATE EXTENSION pg_semantic_view;` after the extension is installed into your PostgreSQL environment.
 - Snowflake Postgres installation: see [`docs/installing-on-snowflake-postgres.md`](docs/installing-on-snowflake-postgres.md) for the managed-service-specific install flow. The short version is that Snowflake Postgres should currently use the SQL file directly instead of `CREATE EXTENSION pg_semantic_view;`.
+- Snowflake-shaped JSON import guide: see [`docs/importing-snowflake-semantic-json.md`](docs/importing-snowflake-semantic-json.md) for stronger examples of `semantic.import_snowflake_view(...)`.
 
 ### Sample data guide
 

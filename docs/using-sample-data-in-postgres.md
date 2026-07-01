@@ -309,6 +309,10 @@ SELECT semantic.import_snowflake_view(
 
 This path is useful when your goal is to preserve Snowflake-style semantic metadata and naming as directly as possible before compiling queries in PostgreSQL.
 
+For a stronger end-to-end JSON example and a runnable import script, see:
+
+- [`docs/importing-snowflake-semantic-json.md`](importing-snowflake-semantic-json.md)
+
 ## Step 5: inspect the semantic metadata
 
 Check that the semantic objects are registered:
