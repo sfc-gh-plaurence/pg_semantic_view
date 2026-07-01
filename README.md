@@ -26,12 +26,13 @@ The implementation currently supports:
 - helper APIs such as `add_logical_table`, `add_relationship`, `add_dimension`, `add_fact`, and `add_metric`
 - `semantic.compile_sql(...)` for generating executable PostgreSQL SQL
 - `semantic.query(...)` for executing compiled semantic queries
-- `semantic.import_osi(...)` and `semantic.export_osi(...)` as lightweight interchange helpers
+- `semantic.import_osi(...)`, `semantic.import_snowflake_view(...)`, and `semantic.export_osi(...)` as interchange and reuse helpers
 - `semantic.meta_*` views for tool and AI inspection
 - qualified semantic names for dimensions, facts, and metrics, in addition to local object names
 - structured relationship metadata, including join columns and relationship expression language
 - canonical expression storage for dimensions and facts, not just metrics
 - explicit storage for SQL-generation guidance, question-categorization guidance, and verified-query metadata
+- direct compilation of derived metrics through registered metric dependencies
 
 ### Installation guides
 
