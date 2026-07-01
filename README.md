@@ -29,6 +29,11 @@ The implementation currently supports:
 - `semantic.import_osi(...)` and `semantic.export_osi(...)` as lightweight interchange helpers
 - `semantic.meta_*` views for tool and AI inspection
 
+### Installation guides
+
+- Standard PostgreSQL installation: use `CREATE EXTENSION pg_semantic_view;` after the extension is installed into your PostgreSQL environment.
+- Snowflake Postgres installation: see [`docs/installing-on-snowflake-postgres.md`](docs/installing-on-snowflake-postgres.md) for the managed-service-specific install flow. The short version is that Snowflake Postgres should currently use the SQL file directly instead of `CREATE EXTENSION pg_semantic_view;`.
+
 ### Quick start
 
 After installing the extension in a PostgreSQL environment:
