@@ -7,6 +7,8 @@ CREATE TABLE semantic.views (
     default_base_logical_table text,
     source_format text,
     source_version text,
+    sql_generation_instructions text,
+    question_categorization_instructions text,
     ai_context jsonb NOT NULL DEFAULT '{}'::jsonb,
     options jsonb NOT NULL DEFAULT '{}'::jsonb,
     extensions jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -37,7 +39,10 @@ CREATE TABLE semantic.relationships (
     from_table_id bigint NOT NULL REFERENCES semantic.logical_tables(id) ON DELETE CASCADE,
     to_table_id bigint NOT NULL REFERENCES semantic.logical_tables(id) ON DELETE CASCADE,
     join_sql text NOT NULL,
+    from_columns jsonb NOT NULL DEFAULT '[]'::jsonb,
+    to_columns jsonb NOT NULL DEFAULT '[]'::jsonb,
     cardinality text NOT NULL DEFAULT 'many_to_one',
+    relationship_expression_language text NOT NULL DEFAULT 'postgresql_sql',
     description text,
     extensions jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -50,14 +55,18 @@ CREATE TABLE semantic.dimensions (
     view_id bigint NOT NULL REFERENCES semantic.views(id) ON DELETE CASCADE,
     logical_table_id bigint NOT NULL REFERENCES semantic.logical_tables(id) ON DELETE CASCADE,
     name text NOT NULL,
+    qualified_name text NOT NULL,
     expression_sql text NOT NULL,
+    expression_canonical jsonb,
+    expression_language text NOT NULL DEFAULT 'postgresql_sql',
     description text,
     synonyms jsonb NOT NULL DEFAULT '[]'::jsonb,
     data_type text,
     time_granularity text,
     extensions jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (view_id, name)
+    UNIQUE (view_id, qualified_name),
+    UNIQUE (view_id, logical_table_id, name)
 );
 
 CREATE TABLE semantic.facts (
@@ -65,14 +74,18 @@ CREATE TABLE semantic.facts (
     view_id bigint NOT NULL REFERENCES semantic.views(id) ON DELETE CASCADE,
     logical_table_id bigint NOT NULL REFERENCES semantic.logical_tables(id) ON DELETE CASCADE,
     name text NOT NULL,
+    qualified_name text NOT NULL,
     expression_sql text NOT NULL,
+    expression_canonical jsonb,
+    expression_language text NOT NULL DEFAULT 'postgresql_sql',
     description text,
     synonyms jsonb NOT NULL DEFAULT '[]'::jsonb,
     data_type text,
     visibility text NOT NULL DEFAULT 'public',
     extensions jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (view_id, name),
+    UNIQUE (view_id, qualified_name),
+    UNIQUE (view_id, logical_table_id, name),
     CHECK (visibility IN ('public', 'private'))
 );
 
@@ -81,6 +94,7 @@ CREATE TABLE semantic.metrics (
     view_id bigint NOT NULL REFERENCES semantic.views(id) ON DELETE CASCADE,
     logical_table_id bigint REFERENCES semantic.logical_tables(id) ON DELETE CASCADE,
     name text NOT NULL,
+    qualified_name text NOT NULL,
     expression_sql text NOT NULL,
     expression_canonical jsonb,
     expression_language text NOT NULL DEFAULT 'postgresql_sql',
@@ -90,7 +104,8 @@ CREATE TABLE semantic.metrics (
     aggregation_kind text NOT NULL DEFAULT 'custom',
     extensions jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (view_id, name),
+    UNIQUE (view_id, qualified_name),
+    UNIQUE (view_id, logical_table_id, name),
     CHECK (visibility IN ('public', 'private'))
 );
 
@@ -107,6 +122,9 @@ CREATE TABLE semantic.examples (
     name text NOT NULL,
     question text,
     example_sql text,
+    verified_at bigint,
+    onboarding_question boolean NOT NULL DEFAULT false,
+    verified_by text,
     context jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (view_id, name)
@@ -233,6 +251,61 @@ BEGIN
 END;
 $function$;
 
+CREATE OR REPLACE FUNCTION semantic.build_qualified_name(
+    p_logical_table_name text,
+    p_object_name text
+) RETURNS text
+LANGUAGE plpgsql
+IMMUTABLE
+AS $function$
+BEGIN
+    IF p_logical_table_name IS NULL OR trim(p_logical_table_name) = '' THEN
+        RETURN p_object_name;
+    END IF;
+
+    RETURN format('%s.%s', p_logical_table_name, p_object_name);
+END;
+$function$;
+
+CREATE OR REPLACE FUNCTION semantic.resolve_metric_id(
+    p_view_id bigint,
+    p_metric_identifier text
+) RETURNS bigint
+LANGUAGE plpgsql
+STABLE
+AS $function$
+DECLARE
+    v_metric_id bigint;
+    v_match_count integer;
+BEGIN
+    SELECT id, count(*) OVER ()
+    INTO v_metric_id, v_match_count
+    FROM semantic.metrics
+    WHERE view_id = p_view_id
+      AND qualified_name = p_metric_identifier;
+
+    IF v_metric_id IS NOT NULL THEN
+        RETURN v_metric_id;
+    END IF;
+
+    SELECT id, count(*) OVER ()
+    INTO v_metric_id, v_match_count
+    FROM semantic.metrics
+    WHERE view_id = p_view_id
+      AND name = p_metric_identifier;
+
+    IF v_metric_id IS NULL THEN
+        RAISE EXCEPTION 'Metric identifier "%" does not exist in semantic view id %.', p_metric_identifier, p_view_id;
+    END IF;
+
+    IF v_match_count > 1 THEN
+        RAISE EXCEPTION 'Metric identifier "%" is ambiguous in semantic view id %. Use a qualified name.', p_metric_identifier, p_view_id;
+    END IF;
+
+    RETURN v_metric_id;
+END;
+$function$;
+
 CREATE OR REPLACE FUNCTION semantic.register_metric_dependencies(
     p_view_name text,
     p_metric_name text,
@@ -252,22 +325,14 @@ BEGIN
 
     v_view_id := semantic.require_view_id(p_view_name);
 
-    SELECT id
-    INTO v_metric_id
-    FROM semantic.metrics
-    WHERE view_id = v_view_id
-      AND name = p_metric_name;
+    v_metric_id := semantic.resolve_metric_id(v_view_id, p_metric_name);
 
     IF v_metric_id IS NULL THEN
         RAISE EXCEPTION 'Metric "%" does not exist in semantic view "%".', p_metric_name, p_view_name;
     END IF;
 
     FOREACH v_dependency_name IN ARRAY p_depends_on_metrics LOOP
-        SELECT id
-        INTO v_dependency_id
-        FROM semantic.metrics
-        WHERE view_id = v_view_id
-          AND name = v_dependency_name;
+        v_dependency_id := semantic.resolve_metric_id(v_view_id, v_dependency_name);
 
         IF v_dependency_id IS NULL THEN
             RAISE EXCEPTION 'Metric dependency "%" does not exist in semantic view "%".', v_dependency_name, p_view_name;
@@ -362,7 +427,10 @@ CREATE OR REPLACE FUNCTION semantic.add_relationship(
     p_from_table text,
     p_to_table text,
     p_join_sql text,
+    p_from_columns text[] DEFAULT ARRAY[]::text[],
+    p_to_columns text[] DEFAULT ARRAY[]::text[],
     p_cardinality text DEFAULT 'many_to_one',
+    p_relationship_expression_language text DEFAULT 'postgresql_sql',
     p_description text DEFAULT NULL,
     p_extensions jsonb DEFAULT '{}'::jsonb
 ) RETURNS bigint
@@ -394,7 +462,10 @@ BEGIN
         from_table_id,
         to_table_id,
         join_sql,
+        from_columns,
+        to_columns,
         cardinality,
+        relationship_expression_language,
         description,
         extensions
     )
@@ -404,7 +475,10 @@ BEGIN
         v_from_table_id,
         v_to_table_id,
         p_join_sql,
+        to_jsonb(COALESCE(p_from_columns, ARRAY[]::text[])),
+        to_jsonb(COALESCE(p_to_columns, ARRAY[]::text[])),
         COALESCE(NULLIF(trim(lower(p_cardinality)), ''), 'many_to_one'),
+        COALESCE(NULLIF(trim(p_relationship_expression_language), ''), 'postgresql_sql'),
         p_description,
         COALESCE(p_extensions, '{}'::jsonb)
     )
@@ -424,7 +498,10 @@ CREATE OR REPLACE FUNCTION semantic.add_dimension(
     p_synonyms text[] DEFAULT ARRAY[]::text[],
     p_data_type text DEFAULT NULL,
     p_time_granularity text DEFAULT NULL,
-    p_extensions jsonb DEFAULT '{}'::jsonb
+    p_extensions jsonb DEFAULT '{}'::jsonb,
+    p_qualified_name text DEFAULT NULL,
+    p_expression_canonical jsonb DEFAULT NULL,
+    p_expression_language text DEFAULT 'postgresql_sql'
 ) RETURNS bigint
 LANGUAGE plpgsql
 AS $function$
@@ -432,8 +509,13 @@ DECLARE
     v_view_id bigint;
     v_logical_table_id bigint;
     v_dimension_id bigint;
+    v_qualified_name text;
 BEGIN
     PERFORM semantic.assert_jsonb_type(p_extensions, 'object', 'extensions');
+
+    IF p_expression_canonical IS NOT NULL THEN
+        PERFORM semantic.assert_jsonb_type(p_expression_canonical, 'object', 'expression_canonical');
+    END IF;
 
     IF coalesce(trim(p_dimension_name), '') = '' THEN
         RAISE EXCEPTION 'Dimension name is required.';
@@ -445,12 +527,16 @@ BEGIN
 
     v_view_id := semantic.require_view_id(p_view_name);
     v_logical_table_id := semantic.require_logical_table_id(v_view_id, p_logical_table_name);
+    v_qualified_name := COALESCE(NULLIF(trim(p_qualified_name), ''), semantic.build_qualified_name(p_logical_table_name, p_dimension_name));
 
     INSERT INTO semantic.dimensions(
         view_id,
         logical_table_id,
         name,
+        qualified_name,
         expression_sql,
+        expression_canonical,
+        expression_language,
         description,
         synonyms,
         data_type,
@@ -461,7 +547,10 @@ BEGIN
         v_view_id,
         v_logical_table_id,
         p_dimension_name,
+        v_qualified_name,
         p_sql_expression,
+        p_expression_canonical,
+        COALESCE(NULLIF(trim(p_expression_language), ''), 'postgresql_sql'),
         p_description,
         to_jsonb(COALESCE(p_synonyms, ARRAY[]::text[])),
         p_data_type,
@@ -484,7 +573,10 @@ CREATE OR REPLACE FUNCTION semantic.add_fact(
     p_description text DEFAULT NULL,
     p_synonyms text[] DEFAULT ARRAY[]::text[],
     p_data_type text DEFAULT NULL,
-    p_extensions jsonb DEFAULT '{}'::jsonb
+    p_extensions jsonb DEFAULT '{}'::jsonb,
+    p_qualified_name text DEFAULT NULL,
+    p_expression_canonical jsonb DEFAULT NULL,
+    p_expression_language text DEFAULT 'postgresql_sql'
 ) RETURNS bigint
 LANGUAGE plpgsql
 AS $function$
@@ -493,8 +585,13 @@ DECLARE
     v_logical_table_id bigint;
     v_fact_id bigint;
     v_visibility text;
+    v_qualified_name text;
 BEGIN
     PERFORM semantic.assert_jsonb_type(p_extensions, 'object', 'extensions');
+
+    IF p_expression_canonical IS NOT NULL THEN
+        PERFORM semantic.assert_jsonb_type(p_expression_canonical, 'object', 'expression_canonical');
+    END IF;
 
     IF coalesce(trim(p_fact_name), '') = '' THEN
         RAISE EXCEPTION 'Fact name is required.';
@@ -512,12 +609,16 @@ BEGIN
 
     v_view_id := semantic.require_view_id(p_view_name);
     v_logical_table_id := semantic.require_logical_table_id(v_view_id, p_logical_table_name);
+    v_qualified_name := COALESCE(NULLIF(trim(p_qualified_name), ''), semantic.build_qualified_name(p_logical_table_name, p_fact_name));
 
     INSERT INTO semantic.facts(
         view_id,
         logical_table_id,
         name,
+        qualified_name,
         expression_sql,
+        expression_canonical,
+        expression_language,
         description,
         synonyms,
         data_type,
@@ -528,7 +629,10 @@ BEGIN
         v_view_id,
         v_logical_table_id,
         p_fact_name,
+        v_qualified_name,
         p_sql_expression,
+        p_expression_canonical,
+        COALESCE(NULLIF(trim(p_expression_language), ''), 'postgresql_sql'),
         p_description,
         to_jsonb(COALESCE(p_synonyms, ARRAY[]::text[])),
         p_data_type,
@@ -554,7 +658,8 @@ CREATE OR REPLACE FUNCTION semantic.add_metric(
     p_expression_canonical jsonb DEFAULT NULL,
     p_expression_language text DEFAULT 'postgresql_sql',
     p_extensions jsonb DEFAULT '{}'::jsonb,
-    p_depends_on_metrics text[] DEFAULT NULL
+    p_depends_on_metrics text[] DEFAULT NULL,
+    p_qualified_name text DEFAULT NULL
 ) RETURNS bigint
 LANGUAGE plpgsql
 AS $function$
@@ -563,6 +668,7 @@ DECLARE
     v_logical_table_id bigint;
     v_metric_id bigint;
     v_visibility text;
+    v_qualified_name text;
 BEGIN
     PERFORM semantic.assert_jsonb_type(p_extensions, 'object', 'extensions');
 
@@ -592,10 +698,16 @@ BEGIN
         v_logical_table_id := NULL;
     END IF;
 
+    v_qualified_name := COALESCE(
+        NULLIF(trim(p_qualified_name), ''),
+        semantic.build_qualified_name(p_logical_table_name, p_metric_name)
+    );
+
     INSERT INTO semantic.metrics(
         view_id,
         logical_table_id,
         name,
+        qualified_name,
         expression_sql,
         expression_canonical,
         expression_language,
@@ -609,6 +721,7 @@ BEGIN
         v_view_id,
         v_logical_table_id,
         p_metric_name,
+        v_qualified_name,
         p_sql_expression,
         p_expression_canonical,
         COALESCE(NULLIF(trim(p_expression_language), ''), 'postgresql_sql'),
@@ -623,7 +736,7 @@ BEGIN
 
     PERFORM semantic.register_metric_dependencies(
         p_view_name,
-        p_metric_name,
+        v_qualified_name,
         p_depends_on_metrics
     );
 
@@ -636,7 +749,10 @@ CREATE OR REPLACE FUNCTION semantic.add_example(
     p_example_name text,
     p_question text,
     p_example_sql text,
-    p_context jsonb DEFAULT '{}'::jsonb
+    p_context jsonb DEFAULT '{}'::jsonb,
+    p_verified_at bigint DEFAULT NULL,
+    p_onboarding_question boolean DEFAULT false,
+    p_verified_by text DEFAULT NULL
 ) RETURNS bigint
 LANGUAGE plpgsql
 AS $function$
@@ -657,6 +773,9 @@ BEGIN
         name,
         question,
         example_sql,
+        verified_at,
+        onboarding_question,
+        verified_by,
         context
     )
     VALUES (
@@ -664,6 +783,9 @@ BEGIN
         p_example_name,
         p_question,
         p_example_sql,
+        p_verified_at,
+        COALESCE(p_onboarding_question, false),
+        p_verified_by,
         COALESCE(p_context, '{}'::jsonb)
     )
     RETURNING id
@@ -718,6 +840,8 @@ BEGIN
         default_base_logical_table,
         source_format,
         source_version,
+        sql_generation_instructions,
+        question_categorization_instructions,
         ai_context,
         options,
         extensions
@@ -728,6 +852,8 @@ BEGIN
         v_definition ->> 'default_base_logical_table',
         COALESCE(v_definition ->> 'source_format', 'internal'),
         v_definition ->> 'source_version',
+        COALESCE(v_definition ->> 'sql_generation_instructions', v_definition ->> 'ai_sql_generation'),
+        COALESCE(v_definition ->> 'question_categorization_instructions', v_definition ->> 'ai_question_categorization'),
         COALESCE(v_definition -> 'ai_context', '{}'::jsonb),
         COALESCE(v_definition -> 'options', '{}'::jsonb),
         COALESCE(v_definition -> 'extensions', '{}'::jsonb)
@@ -767,7 +893,10 @@ BEGIN
             v_item ->> 'from',
             v_item ->> 'to',
             COALESCE(v_item ->> 'join_sql', v_item ->> 'on'),
+            semantic.jsonb_to_text_array(v_item -> 'from_columns'),
+            semantic.jsonb_to_text_array(v_item -> 'to_columns'),
             COALESCE(v_item ->> 'cardinality', 'many_to_one'),
+            COALESCE(v_item ->> 'relationship_expression_language', 'postgresql_sql'),
             v_item ->> 'description',
             COALESCE(v_item -> 'extensions', '{}'::jsonb)
         );
@@ -786,7 +915,10 @@ BEGIN
             semantic.jsonb_to_text_array(v_item -> 'synonyms'),
             v_item ->> 'data_type',
             v_item ->> 'time_granularity',
-            COALESCE(v_item -> 'extensions', '{}'::jsonb)
+            COALESCE(v_item -> 'extensions', '{}'::jsonb),
+            v_item ->> 'qualified_name',
+            v_item -> 'expression_canonical',
+            COALESCE(v_item ->> 'expression_language', 'postgresql_sql')
         );
     END LOOP;
 
@@ -803,7 +935,10 @@ BEGIN
             v_item ->> 'description',
             semantic.jsonb_to_text_array(v_item -> 'synonyms'),
             v_item ->> 'data_type',
-            COALESCE(v_item -> 'extensions', '{}'::jsonb)
+            COALESCE(v_item -> 'extensions', '{}'::jsonb),
+            v_item ->> 'qualified_name',
+            v_item -> 'expression_canonical',
+            COALESCE(v_item ->> 'expression_language', 'postgresql_sql')
         );
     END LOOP;
 
@@ -823,7 +958,8 @@ BEGIN
             v_item -> 'expression_canonical',
             COALESCE(v_item ->> 'expression_language', 'postgresql_sql'),
             COALESCE(v_item -> 'extensions', '{}'::jsonb),
-            NULL
+            NULL,
+            v_item ->> 'qualified_name'
         );
     END LOOP;
 
@@ -833,7 +969,7 @@ BEGIN
     LOOP
         PERFORM semantic.register_metric_dependencies(
             p_view_name,
-            v_metrics_item ->> 'name',
+            COALESCE(v_metrics_item ->> 'qualified_name', v_metrics_item ->> 'name'),
             semantic.jsonb_to_text_array(v_metrics_item -> 'depends_on_metrics')
         );
     END LOOP;
@@ -847,7 +983,10 @@ BEGIN
             v_item ->> 'name',
             v_item ->> 'question',
             v_item ->> 'sql',
-            COALESCE(v_item -> 'context', '{}'::jsonb)
+            COALESCE(v_item -> 'context', '{}'::jsonb),
+            COALESCE((v_item ->> 'verified_at')::bigint, NULL),
+            COALESCE((v_item ->> 'onboarding_question')::boolean, false),
+            v_item ->> 'verified_by'
         );
     END LOOP;
 
@@ -934,7 +1073,10 @@ BEGIN
                 jsonb_build_object(
                     'table', v_dataset ->> 'name',
                     'name', v_dimension ->> 'name',
+                    'qualified_name', COALESCE(v_dimension ->> 'qualified_name', semantic.build_qualified_name(v_dataset ->> 'name', v_dimension ->> 'name')),
                     'expression_sql', COALESCE(v_dimension ->> 'expression', v_dimension ->> 'sql'),
+                    'expression_canonical', COALESCE(v_dimension -> 'expression_canonical', v_dimension -> 'expression_ast'),
+                    'expression_language', COALESCE(v_dimension ->> 'expression_language', 'postgresql_sql'),
                     'description', v_dimension ->> 'description',
                     'synonyms', COALESCE(v_dimension -> 'synonyms', '[]'::jsonb),
                     'data_type', COALESCE(v_dimension ->> 'data_type', v_dimension ->> 'type'),
@@ -952,7 +1094,10 @@ BEGIN
                 jsonb_build_object(
                     'table', v_dataset ->> 'name',
                     'name', v_fact ->> 'name',
+                    'qualified_name', COALESCE(v_fact ->> 'qualified_name', semantic.build_qualified_name(v_dataset ->> 'name', v_fact ->> 'name')),
                     'expression_sql', COALESCE(v_fact ->> 'expression', v_fact ->> 'sql'),
+                    'expression_canonical', COALESCE(v_fact -> 'expression_canonical', v_fact -> 'expression_ast'),
+                    'expression_language', COALESCE(v_fact ->> 'expression_language', 'postgresql_sql'),
                     'visibility', COALESCE(v_fact ->> 'visibility', 'public'),
                     'description', v_fact ->> 'description',
                     'synonyms', COALESCE(v_fact -> 'synonyms', '[]'::jsonb),
@@ -973,7 +1118,10 @@ BEGIN
                 'from', COALESCE(v_relationship ->> 'from', v_relationship #>> '{from,dataset}'),
                 'to', COALESCE(v_relationship ->> 'to', v_relationship #>> '{to,dataset}'),
                 'join_sql', COALESCE(v_relationship ->> 'join_sql', v_relationship ->> 'on'),
+                'from_columns', COALESCE(v_relationship -> 'from_columns', '[]'::jsonb),
+                'to_columns', COALESCE(v_relationship -> 'to_columns', '[]'::jsonb),
                 'cardinality', COALESCE(v_relationship ->> 'cardinality', 'many_to_one'),
+                'relationship_expression_language', COALESCE(v_relationship ->> 'relationship_expression_language', 'postgresql_sql'),
                 'description', v_relationship ->> 'description',
                 'extensions', COALESCE(v_relationship -> 'custom_extensions', v_relationship -> 'extensions', '{}'::jsonb)
             )
@@ -988,6 +1136,14 @@ BEGIN
             jsonb_build_object(
                 'table', COALESCE(v_metric ->> 'table', v_metric ->> 'dataset'),
                 'name', v_metric ->> 'name',
+                'qualified_name',
+                    COALESCE(
+                        v_metric ->> 'qualified_name',
+                        semantic.build_qualified_name(
+                            COALESCE(v_metric ->> 'table', v_metric ->> 'dataset'),
+                            v_metric ->> 'name'
+                        )
+                    ),
                 'expression_sql', COALESCE(v_metric ->> 'expression', v_metric ->> 'sql'),
                 'description', v_metric ->> 'description',
                 'visibility', COALESCE(v_metric ->> 'visibility', 'public'),
@@ -1010,6 +1166,9 @@ BEGIN
                 'name', v_example ->> 'name',
                 'question', v_example ->> 'question',
                 'sql', COALESCE(v_example ->> 'sql', v_example ->> 'example_sql'),
+                'verified_at', COALESCE((v_example ->> 'verified_at')::bigint, NULL),
+                'onboarding_question', COALESCE((v_example ->> 'onboarding_question')::boolean, false),
+                'verified_by', v_example ->> 'verified_by',
                 'context', COALESCE(v_example -> 'context', '{}'::jsonb)
             )
         );
@@ -1020,6 +1179,8 @@ BEGIN
         'default_base_logical_table', p_document ->> 'default_base_logical_table',
         'source_format', 'osi',
         'source_version', p_document ->> 'version',
+        'sql_generation_instructions', p_document #>> '{ai_context,sql_generation_instructions}',
+        'question_categorization_instructions', p_document #>> '{ai_context,question_categorization_instructions}',
         'ai_context', COALESCE(p_document -> 'ai_context', '{}'::jsonb),
         'extensions', COALESCE(p_document -> 'custom_extensions', '{}'::jsonb),
         'logical_tables', v_datasets,
@@ -1050,7 +1211,13 @@ BEGIN
         'name', v.name,
         'description', v.description,
         'version', v.source_version,
-        'ai_context', v.ai_context,
+        'ai_context',
+            v.ai_context || jsonb_strip_nulls(
+                jsonb_build_object(
+                    'sql_generation_instructions', v.sql_generation_instructions,
+                    'question_categorization_instructions', v.question_categorization_instructions
+                )
+            ),
         'custom_extensions', v.extensions,
         'datasets',
             COALESCE(
@@ -1071,7 +1238,10 @@ BEGIN
                                         SELECT jsonb_agg(
                                             jsonb_build_object(
                                                 'name', d.name,
+                                                'qualified_name', d.qualified_name,
                                                 'expression', d.expression_sql,
+                                                'expression_ast', d.expression_canonical,
+                                                'expression_language', d.expression_language,
                                                 'description', d.description,
                                                 'synonyms', d.synonyms,
                                                 'data_type', d.data_type,
@@ -1098,7 +1268,10 @@ BEGIN
                                         SELECT jsonb_agg(
                                             jsonb_build_object(
                                                 'name', f.name,
+                                                'qualified_name', f.qualified_name,
                                                 'expression', f.expression_sql,
+                                                'expression_ast', f.expression_canonical,
+                                                'expression_language', f.expression_language,
                                                 'description', f.description,
                                                 'synonyms', f.synonyms,
                                                 'data_type', f.data_type,
@@ -1130,7 +1303,10 @@ BEGIN
                             'from', jsonb_build_object('dataset', from_lt.name),
                             'to', jsonb_build_object('dataset', to_lt.name),
                             'join_sql', r.join_sql,
+                            'from_columns', r.from_columns,
+                            'to_columns', r.to_columns,
                             'cardinality', r.cardinality,
+                            'relationship_expression_language', r.relationship_expression_language,
                             'description', r.description,
                             'custom_extensions', r.extensions
                         )
@@ -1150,6 +1326,7 @@ BEGIN
                         jsonb_build_object(
                             'name', m.name,
                             'dataset', lt.name,
+                            'qualified_name', m.qualified_name,
                             'expression', m.expression_sql,
                             'expression_ast', m.expression_canonical,
                             'expression_language', m.expression_language,
@@ -1186,6 +1363,9 @@ BEGIN
                             'name', e.name,
                             'question', e.question,
                             'sql', e.example_sql,
+                            'verified_at', e.verified_at,
+                            'onboarding_question', e.onboarding_question,
+                            'verified_by', e.verified_by,
                             'context', e.context
                         )
                         ORDER BY e.name
@@ -1526,6 +1706,8 @@ SELECT
     v.default_base_logical_table,
     v.source_format,
     v.source_version,
+    v.sql_generation_instructions,
+    v.question_categorization_instructions,
     v.ai_context,
     v.options,
     v.extensions,
@@ -1556,7 +1738,10 @@ SELECT
     from_lt.name AS from_logical_table,
     to_lt.name AS to_logical_table,
     r.join_sql,
+    r.from_columns,
+    r.to_columns,
     r.cardinality,
+    r.relationship_expression_language,
     r.description,
     r.extensions,
     r.created_at
@@ -1573,7 +1758,10 @@ SELECT
     v.name AS view_name,
     lt.name AS logical_table_name,
     d.name AS dimension_name,
+    d.qualified_name,
     d.expression_sql,
+    d.expression_canonical,
+    d.expression_language,
     d.description,
     d.synonyms,
     d.data_type,
@@ -1591,7 +1779,10 @@ SELECT
     v.name AS view_name,
     lt.name AS logical_table_name,
     f.name AS fact_name,
+    f.qualified_name,
     f.expression_sql,
+    f.expression_canonical,
+    f.expression_language,
     f.description,
     f.synonyms,
     f.data_type,
@@ -1609,6 +1800,7 @@ SELECT
     v.name AS view_name,
     lt.name AS logical_table_name,
     m.name AS metric_name,
+    m.qualified_name,
     m.expression_sql,
     m.expression_canonical,
     m.expression_language,
@@ -1630,6 +1822,9 @@ SELECT
     e.name AS example_name,
     e.question,
     e.example_sql,
+    e.verified_at,
+    e.onboarding_question,
+    e.verified_by,
     e.context,
     e.created_at
 FROM semantic.examples e
